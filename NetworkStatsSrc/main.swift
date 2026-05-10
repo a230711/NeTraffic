@@ -19,10 +19,13 @@ class MenuBarView: NSView {
     }
     
     override func draw(_ dirtyRect: NSRect) {
-        // 1. 繪製背景
+        // 1. 繪製背景 (圓角色塊風格)
         if let bgColor = warningColor {
             bgColor.setFill()
-            dirtyRect.fill()
+            // 上下縮排 2 像素，左右縮排 1 像素，產生漂浮感
+            let pillRect = bounds.insetBy(dx: 1, dy: 2)
+            let path = NSBezierPath(roundedRect: pillRect, xRadius: 4, yRadius: 4)
+            path.fill()
         }
         
         // 2. 顏色判斷
@@ -90,7 +93,9 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     func updateUI() {
         guard let _ = statusItem.button else { return }
         
-        let isDisconnected = (self.monitor.networkDevice == "-" || !self.monitor.isConnected)
+        // 優先以 isConnected 判斷，避免設備名稱更新延遲
+        let isDisconnected = !self.monitor.isConnected
+        
         if isDisconnected {
             if self.disconnectionStartTime == nil {
                 self.disconnectionStartTime = Date()
