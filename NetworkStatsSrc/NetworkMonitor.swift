@@ -3,6 +3,7 @@ import Darwin
 import SystemConfiguration
 import CoreWLAN
 import UserNotifications
+import Network
 
 class NetworkMonitor: ObservableObject {
     @Published var rxSpeed: UInt64 = 0
@@ -16,10 +17,12 @@ class NetworkMonitor: ObservableObject {
     @Published var networkDevice: String = "未連接"
     @Published var networkProvider: String = "未偵測"
     @Published var connectionMethod: String = "未偵測"
+    @Published var isConnected: Bool = false
     
     private var notifiedRawNames = Set<String>()
     
     private var timer: Timer?
+    private var pathMonitor: NWPathMonitor?
     private var lastRx: UInt64 = 0
     private var lastTx: UInt64 = 0
     private var isFirstRun = true
@@ -27,6 +30,18 @@ class NetworkMonitor: ObservableObject {
     func startMonitoring() {
         // 請求通知權限
         UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound]) { _, _ in }
+        
+        // 使用 NWPathMonitor 監控網路連線狀態
+        pathMonitor = NWPathMonitor()
+        pathMonitor?.pathUpdateHandler = { [weak self] path in
+            let connected = (path.status == .satisfied)
+            DispatchQueue.main.async {
+                self?.isConnected = connected
+                print("DEBUG: NWPathMonitor Status -> \(connected ? "Connected" : "Disconnected") (Path: \(String(describing: path)))")
+            }
+        }
+        let queue = DispatchQueue(label: "NetworkMonitorQueue")
+        pathMonitor?.start(queue: queue)
         
         // Use .common runloop mode to ensure the timer fires even when a popover/menu is active
         timer = Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { [weak self] _ in
@@ -94,10 +109,16 @@ class NetworkMonitor: ObservableObject {
                 self.networkDevice = "-"
                 self.networkProvider = "-"
                 self.connectionMethod = "-"
+                self.isConnected = false
             }
         }
         
         DispatchQueue.main.async {
+            // 如果沒抓到 activeInterface，表示實體層級斷開
+            if activeInterface == nil {
+                self.isConnected = false
+            }
+            
             if self.isFirstRun {
                 self.lastRx = rx
                 self.lastTx = tx
