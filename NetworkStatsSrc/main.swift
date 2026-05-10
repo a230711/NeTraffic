@@ -73,7 +73,9 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         statusItem = NSStatusBar.system.statusItem(withLength: 60)
         
         if let button = statusItem.button {
+            // 建立並添加自定義視圖，並設定自動縮放
             menuBarView = MenuBarView(frame: button.bounds)
+            menuBarView.autoresizingMask = [.width, .height] // 確保視圖會隨按鈕縮放
             button.addSubview(menuBarView)
             
             button.action = #selector(togglePanel(_:))

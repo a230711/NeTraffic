@@ -13,7 +13,7 @@ if [ $? -eq 0 ]; then
     rm -f /Users/changkueichen/Program/Mac/WiFiBar/wifi_menubar.*.sh
     
     echo "Launching NeTraffic..."
-    open NeTraffic.app
+    ./NeTraffic.app/Contents/MacOS/NeTraffic > /dev/null 2>&1 &
 else
     echo "❌ Build failed!"
 fi
