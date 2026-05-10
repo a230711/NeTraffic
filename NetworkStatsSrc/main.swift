@@ -8,6 +8,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     var monitor = NetworkMonitor()
     var statsReader = StatsJSONReader()
     var cancellable: AnyCancellable?
+    var disconnectionStartTime: Date? = nil
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         monitor.startMonitoring()
@@ -28,10 +29,23 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             let txSpeed = self.monitor.txSpeed
             let rxSpeed = self.monitor.rxSpeed
             
+            // 判斷斷線狀態
+            let isDisconnected = self.monitor.networkDevice == "-"
+            if isDisconnected {
+                if self.disconnectionStartTime == nil {
+                    self.disconnectionStartTime = Date()
+                }
+            } else {
+                self.disconnectionStartTime = nil
+            }
+            
+            let absDuration = self.disconnectionStartTime != nil ? abs(self.disconnectionStartTime!.timeIntervalSinceNow) : 0
+            let warningColor = self.getWarningColor(for: absDuration, isDisconnected: isDisconnected)
+            
             let txString = self.formatSpeed(txSpeed)
             let rxString = self.formatSpeed(rxSpeed)
             
-            button.image = self.createMenuBarImage(txString: txString, rxString: rxString, txSpeed: txSpeed, rxSpeed: rxSpeed)
+            button.image = self.createMenuBarImage(txString: txString, rxString: rxString, txSpeed: txSpeed, rxSpeed: rxSpeed, warningColor: warningColor)
             button.title = ""
             button.attributedTitle = NSAttributedString(string: "")
         }
@@ -56,6 +70,18 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
     
+    func getWarningColor(for duration: TimeInterval, isDisconnected: Bool) -> NSColor? {
+        guard isDisconnected else { return nil }
+        
+        if duration >= 40 * 60 { return .black }
+        if duration >= 30 * 60 { return .systemRed }
+        if duration >= 10 * 60 { return .systemOrange }
+        if duration >= 5 * 60 { return .systemYellow }
+        if duration >= 1.5 * 60 { return NSColor(calibratedRed: 1.0, green: 1.0, blue: 0.8, alpha: 1.0) } // 淡黃色
+        
+        return nil
+    }
+
     func formatSpeed(_ bytesPerSec: UInt64) -> String {
         let kbps = Double(bytesPerSec) / 1024.0
         if kbps >= 1000 {
@@ -66,20 +92,33 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
     
-    func createMenuBarImage(txString: String, rxString: String, txSpeed: UInt64, rxSpeed: UInt64) -> NSImage {
+    func createMenuBarImage(txString: String, rxString: String, txSpeed: UInt64, rxSpeed: UInt64, warningColor: NSColor?) -> NSImage {
         let width: CGFloat = 60
         let height: CGFloat = 22
         let image = NSImage(size: NSSize(width: width, height: height))
         
         image.lockFocus()
-        let txColor = (txSpeed == 0) ? NSColor.white : NSColor.systemBlue
-        txColor.setFill()
+        
+        // 繪製背景色（如果有警告）
+        if let bgColor = warningColor {
+            bgColor.setFill()
+            NSRect(x: 0, y: 0, width: width, height: height).fill()
+        }
+        
+        // 文字與圖示顏色判定
+        // 當背景為黃、橘、紅時，文字改為灰色；其餘（正常透明或黑色背景）則維持白色
+        let isGrayText = (warningColor != nil && warningColor != .black)
+        let textColor: NSColor = isGrayText ? .gray : .white
+        let dotColorFactor: CGFloat = isGrayText ? 0.6 : 1.0 // 灰色文字時點也稍微變暗一點
+        
+        let txColor = (txSpeed == 0) ? textColor : NSColor.systemBlue
+        txColor.withAlphaComponent(dotColorFactor).setFill()
         let txRect = NSRect(x: 2, y: 12.5, width: 5, height: 5)
         let txPath = NSBezierPath(ovalIn: txRect)
         txPath.fill()
         
-        let rxColor = (rxSpeed == 0) ? NSColor.white : NSColor.systemRed
-        rxColor.setFill()
+        let rxColor = (rxSpeed == 0) ? textColor : NSColor.systemRed
+        rxColor.withAlphaComponent(dotColorFactor).setFill()
         let rxRect = NSRect(x: 2, y: 3.5, width: 5, height: 5)
         let rxPath = NSBezierPath(ovalIn: rxRect)
         rxPath.fill()
@@ -87,7 +126,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         let font = NSFont.monospacedDigitSystemFont(ofSize: 9, weight: .regular)
         let attrs: [NSAttributedString.Key: Any] = [
             .font: font,
-            .foregroundColor: NSColor.white
+            .foregroundColor: textColor
         ]
         
         let txAttrStr = NSAttributedString(string: txString, attributes: attrs)
