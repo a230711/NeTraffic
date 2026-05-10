@@ -1,0 +1,14 @@
+# macOS
+.DS_Store
+
+# Build artifacts
+build/
+*.app/
+*.o
+*.swiftdoc
+*.swiftmodule
+*.abi.json
+
+# Temporary files
+*.swp
+*~
