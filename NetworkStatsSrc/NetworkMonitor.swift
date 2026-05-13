@@ -26,6 +26,7 @@ class NetworkMonitor: ObservableObject {
     private var lastRx: UInt64 = 0
     private var lastTx: UInt64 = 0
     private var isFirstRun = true
+    private var primaryInterfaceFromPath: String? = nil // 新增：從 NWPathMonitor 獲取的系統預設介面
     
     func startMonitoring() {
         // 請求通知權限
@@ -35,9 +36,11 @@ class NetworkMonitor: ObservableObject {
         pathMonitor = NWPathMonitor()
         pathMonitor?.pathUpdateHandler = { [weak self] path in
             let connected = (path.status == .satisfied)
+            let interfaceName = path.availableInterfaces.first?.name // 獲取當前最優先的介面名稱
             DispatchQueue.main.async {
                 self?.isConnected = connected
-                print("DEBUG: NWPathMonitor Status -> \(connected ? "Connected" : "Disconnected") (Path: \(String(describing: path)))")
+                self?.primaryInterfaceFromPath = interfaceName
+                print("DEBUG: NWPathMonitor Status -> \(connected ? "Connected" : "Disconnected") (Primary Interface: \(interfaceName ?? "None"))")
             }
         }
         let queue = DispatchQueue(label: "NetworkMonitorQueue")
@@ -73,7 +76,7 @@ class NetworkMonitor: ObservableObject {
             p = interface.ifa_next
         }
         
-        // 第二步：從具有 IP 的介面中，找出流量最大的實體介面 (en*)
+        // 第二步：從具有 IP 的介面中，找出當前主要介面
         var ptr = ifaddr
         while ptr != nil {
             defer { ptr = ptr?.pointee.ifa_next }
@@ -90,12 +93,22 @@ class NetworkMonitor: ObservableObject {
                     let networkData = data.assumingMemoryBound(to: if_data.self).pointee
                     let currentRx = UInt64(networkData.ifi_ibytes)
                     let currentTx = UInt64(networkData.ifi_obytes)
+                    
+                    // 累加所有有效介面的總流量
                     rx += currentRx
                     tx += currentTx
                     
-                    if activeInterface == nil || (currentRx + currentTx > maxTraffic) {
-                        maxTraffic = currentRx + currentTx
+                    // 判定 activeInterface 的優先順序：
+                    // 1. 如果匹配系統 NWPathMonitor 建議的介面，則絕對優先。
+                    // 2. 如果沒建議，則看誰的歷史流量最大 (保留原邏輯作為備選)。
+                    if let primary = primaryInterfaceFromPath, name == primary {
                         activeInterface = name
+                        maxTraffic = UInt64.max // 強制鎖定為此介面
+                    } else if activeInterface == nil || (currentRx + currentTx > maxTraffic) {
+                        if activeInterface != primaryInterfaceFromPath { // 不要覆蓋掉已經鎖定的系統建議介面
+                            maxTraffic = currentRx + currentTx
+                            activeInterface = name
+                        }
                     }
                 }
             }
@@ -206,12 +219,17 @@ class NetworkMonitor: ObservableObject {
             }
         }
         
-        // 套用自定義映射
+        // 套用自定義映射 (優先使用使用者設定，其次使用內建預設)
         let mappings = UserDefaults.standard.dictionary(forKey: "NetworkMappings") as? [String: [String: String]] ?? [:]
+        
         if let custom = mappings[rawName] {
             device = custom["device"] ?? "-"
             provider = custom["provider"] ?? "-"
             print("Mapping found for \(rawName): \(device), \(provider)")
+        } else if rawName == "22126RN91Y" { // 內建預設：星鏈適配器
+            device = "Starlink"
+            provider = "星鏈"
+            print("Default mapping applied for Starlink (\(rawName))")
         } else {
             // 未知設備，發送通知
             print("No mapping for \(rawName)")
@@ -244,7 +262,18 @@ class NetworkMonitor: ObservableObject {
         guard !rawName.isEmpty else { return }
         
         var mappings = UserDefaults.standard.dictionary(forKey: "NetworkMappings") as? [String: [String: String]] ?? [:]
-        mappings[rawName] = ["device": device, "provider": provider]
+        
+        // 取得目前的原始 Provider（即 Shell 腳本會使用的名稱，例如 "Starlink (星鏈)"）
+        // 這裡我們假設如果 rawName 是 22126RN91Y，它對應的原始名就是 "Starlink (星鏈)"
+        var originalProviderInJSON = provider
+        if rawName == "22126RN91Y" { originalProviderInJSON = "Starlink (星鏈)" }
+        // ... 可以根據需要增加其他硬體代碼與 JSON Key 的對應
+        
+        mappings[rawName] = [
+            "device": device, 
+            "provider": provider,
+            "originalProviderInJSON": originalProviderInJSON
+        ]
         UserDefaults.standard.set(mappings, forKey: "NetworkMappings")
         
         // 立即更新 UI

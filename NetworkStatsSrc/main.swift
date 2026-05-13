@@ -2,63 +2,10 @@ import Cocoa
 import SwiftUI
 import Combine
 
-class MenuBarView: NSView {
-    var txString: String = "0 KB/s"
-    var rxString: String = "0 KB/s"
-    var txSpeed: UInt64 = 0
-    var rxSpeed: UInt64 = 0
-    var warningColor: NSColor? = nil
-    
-    func update(txString: String, rxString: String, txSpeed: UInt64, rxSpeed: UInt64, warningColor: NSColor?) {
-        self.txString = txString
-        self.rxString = rxString
-        self.txSpeed = txSpeed
-        self.rxSpeed = rxSpeed
-        self.warningColor = warningColor
-        self.needsDisplay = true
-    }
-    
-    override func draw(_ dirtyRect: NSRect) {
-        // 1. 繪製背景 (圓角色塊風格)
-        if let bgColor = warningColor {
-            bgColor.setFill()
-            // 上下縮排 2 像素，左右縮排 1 像素，產生漂浮感
-            let pillRect = bounds.insetBy(dx: 1, dy: 2)
-            let path = NSBezierPath(roundedRect: pillRect, xRadius: 4, yRadius: 4)
-            path.fill()
-        }
-        
-        // 2. 顏色判斷
-        let isWarning = (warningColor != nil)
-        let isBlackBG = (warningColor == .black)
-        let textColor: NSColor = (isWarning && !isBlackBG) ? .gray : .white
-        let dotColorFactor: CGFloat = (isWarning && !isBlackBG) ? 0.6 : 1.0
-        
-        // 3. 繪製 TX 點
-        let txColor = (txSpeed == 0) ? textColor : NSColor.systemBlue
-        txColor.withAlphaComponent(dotColorFactor).setFill()
-        NSBezierPath(ovalIn: NSRect(x: 2, y: 12.5, width: 5, height: 5)).fill()
-        
-        // 4. 繪製 RX 點
-        let rxColor = (rxSpeed == 0) ? textColor : NSColor.systemRed
-        rxColor.withAlphaComponent(dotColorFactor).setFill()
-        NSBezierPath(ovalIn: NSRect(x: 2, y: 3.5, width: 5, height: 5)).fill()
-        
-        // 5. 繪製文字
-        let font = NSFont.monospacedDigitSystemFont(ofSize: 9, weight: .regular)
-        let attrs: [NSAttributedString.Key: Any] = [.font: font, .foregroundColor: textColor]
-        
-        let txAttr = NSAttributedString(string: txString, attributes: attrs)
-        let rxAttr = NSAttributedString(string: rxString, attributes: attrs)
-        
-        txAttr.draw(at: NSPoint(x: bounds.width - txAttr.size().width - 2, y: 11.5))
-        rxAttr.draw(at: NSPoint(x: bounds.width - rxAttr.size().width - 2, y: 1.5))
-    }
-}
+// 已移除 MenuBarView，改用 NSImage 繪製以支援多螢幕顯示
 
 class AppDelegate: NSObject, NSApplicationDelegate {
     var statusItem: NSStatusItem!
-    var menuBarView: MenuBarView!
     var panel: StatusPanel?
     var monitor = NetworkMonitor()
     var statsReader = StatsJSONReader()
@@ -73,11 +20,6 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         statusItem = NSStatusBar.system.statusItem(withLength: 60)
         
         if let button = statusItem.button {
-            // 建立並添加自定義視圖，並設定自動縮放
-            menuBarView = MenuBarView(frame: button.bounds)
-            menuBarView.autoresizingMask = [.width, .height] // 確保視圖會隨按鈕縮放
-            button.addSubview(menuBarView)
-            
             button.action = #selector(togglePanel(_:))
             button.target = self
         }
@@ -112,7 +54,51 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         let txString = self.formatSpeed(monitor.txSpeed)
         let rxString = self.formatSpeed(monitor.rxSpeed)
         
-        menuBarView.update(txString: txString, rxString: rxString, txSpeed: monitor.txSpeed, rxSpeed: monitor.rxSpeed, warningColor: warningColor)
+        if let button = statusItem.button {
+            button.image = createStatusImage(txString: txString, rxString: rxString, txSpeed: monitor.txSpeed, rxSpeed: monitor.rxSpeed, warningColor: warningColor, size: button.bounds.size)
+        }
+    }
+    
+    func createStatusImage(txString: String, rxString: String, txSpeed: UInt64, rxSpeed: UInt64, warningColor: NSColor?, size: NSSize) -> NSImage {
+        let image = NSImage(size: size, flipped: false) { rect in
+            // 1. 繪製背景 (圓角色塊風格)
+            if let bgColor = warningColor {
+                bgColor.setFill()
+                let pillRect = rect.insetBy(dx: 1, dy: 2)
+                let path = NSBezierPath(roundedRect: pillRect, xRadius: 4, yRadius: 4)
+                path.fill()
+            }
+            
+            // 2. 顏色判斷
+            let isWarning = (warningColor != nil)
+            let isBlackBG = (warningColor == .black)
+            let textColor: NSColor = (isWarning && !isBlackBG) ? .gray : .white
+            let dotColorFactor: CGFloat = (isWarning && !isBlackBG) ? 0.6 : 1.0
+            
+            // 3. 繪製 TX 點
+            let txColor = (txSpeed == 0) ? textColor : NSColor.systemBlue
+            txColor.withAlphaComponent(dotColorFactor).setFill()
+            NSBezierPath(ovalIn: NSRect(x: 2, y: 12.5, width: 5, height: 5)).fill()
+            
+            // 4. 繪製 RX 點
+            let rxColor = (rxSpeed == 0) ? textColor : NSColor.systemRed
+            rxColor.withAlphaComponent(dotColorFactor).setFill()
+            NSBezierPath(ovalIn: NSRect(x: 2, y: 3.5, width: 5, height: 5)).fill()
+            
+            // 5. 繪製文字
+            let font = NSFont.monospacedDigitSystemFont(ofSize: 9, weight: .regular)
+            let attrs: [NSAttributedString.Key: Any] = [.font: font, .foregroundColor: textColor]
+            
+            let txAttr = NSAttributedString(string: txString, attributes: attrs)
+            let rxAttr = NSAttributedString(string: rxString, attributes: attrs)
+            
+            txAttr.draw(at: NSPoint(x: rect.width - txAttr.size().width - 2, y: 11.5))
+            rxAttr.draw(at: NSPoint(x: rect.width - rxAttr.size().width - 2, y: 1.5))
+            
+            return true
+        }
+        image.isTemplate = false // 必須為 false 才能顯示彩色點與警告背景
+        return image
     }
     
     @objc func togglePanel(_ sender: AnyObject?) {

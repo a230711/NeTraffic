@@ -48,25 +48,44 @@ class StatsJSONReader: ObservableObject {
                 var mTotal: Int64 = 0
                 var oTotal: Int64 = 0
                 
-                var aggregatedStats: [String: (r: Int64, m: Int64, o: Int64)] = [:]
+                // 讀取自定義標籤映射
+                let mappings = UserDefaults.standard.dictionary(forKey: "NetworkMappings") as? [String: [String: String]] ?? [:]
+                var providerOverrides: [String: String] = [:]
+                var deviceOverrides: [String: String] = [:]
                 
+                for (_, map) in mappings {
+                    if let original = map["originalProviderInJSON"] {
+                        if let customP = map["provider"] { providerOverrides[original] = customP }
+                        if let customD = map["device"] { deviceOverrides[original] = customD }
+                    }
+                }
+                
+                var aggregatedStats: [String: (r: Int64, m: Int64, o: Int64)] = [:]
                 let filter = (providerFilter == nil || providerFilter == "-" || providerFilter == "未偵測") ? nil : providerFilter
                 print("Effective Filter: \(filter ?? "none")")
                 
                 for (key, statsDict) in currentMonthData {
-                    
                     let repeater = (statsDict["repeater_total"] as? NSNumber)?.int64Value ?? 0
                     let mac = (statsDict["mac_total"] as? NSNumber)?.int64Value ?? 0
                     let others = (statsDict["others"] as? NSNumber)?.int64Value ?? 0
                     
-                    // Grouping logic for allProviders
-                    let baseName = key.replacingOccurrences(of: " 有線", with: "").replacingOccurrences(of: " 無線", with: "")
-                    let current = aggregatedStats[baseName] ?? (r: 0, m: 0, o: 0)
-                    aggregatedStats[baseName] = (r: current.r + repeater, m: current.m + mac, o: current.o + others)
+                    // 基礎處理：移除修飾詞
+                    let baseNameRaw = key.replacingOccurrences(of: " 有線", with: "").replacingOccurrences(of: " 無線", with: "")
+                    
+                    // 取得自定義顯示名稱
+                    let customProvider = providerOverrides[baseNameRaw] ?? baseNameRaw
+                    let customDevice = deviceOverrides[baseNameRaw] ?? "-"
+                    
+                    // 組合顯示名稱： 如果有設備名稱就顯示 "設備 (供應商)"，否則只顯示供應商
+                    let displayName = (customDevice != "-" && customDevice != "") ? "\(customDevice) (\(customProvider))" : customProvider
+                    
+                    let current = aggregatedStats[displayName] ?? (r: 0, m: 0, o: 0)
+                    aggregatedStats[displayName] = (r: current.r + repeater, m: current.m + mac, o: current.o + others)
                     
                     if let f = filter {
-                        if key.contains(f) {
-                            print("Match found: \(key) (R:\(repeater), M:\(mac), O:\(others))")
+                        // 檢查過濾器：如果原始 Key 包含、或自定義供應商包含、或設備名稱包含，都算匹配
+                        if key.contains(f) || customProvider.contains(f) || customDevice.contains(f) {
+                            print("Match found: \(key) -> \(displayName)")
                             rTotal += repeater
                             mTotal += mac
                             oTotal += others
