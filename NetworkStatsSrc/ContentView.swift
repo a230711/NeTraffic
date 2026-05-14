@@ -9,6 +9,7 @@ struct ContentView: View {
     @State private var customDevice = ""
     @State private var customProvider = ""
     @State private var isShowingAllProviders = false
+    @State private var expandedProviderID: String? = nil // 追蹤目前展開的單一項目 ID
     
     // Auto-refresh timer for JSON stats
     let refreshTimer = Timer.publish(every: 3, on: .main, in: .common).autoconnect()
@@ -194,24 +195,73 @@ struct ContentView: View {
             }
             
             ScrollView(showsIndicators: false) {
-                VStack(spacing: 12) {
+                VStack(spacing: 8) {
                     ForEach(statsReader.allProviders) { provider in
-                        VStack(alignment: .leading, spacing: 8) {
-                            Text(provider.name)
-                                .font(.system(size: 11, weight: .bold))
-                                .foregroundColor(.blue)
+                        VStack(spacing: 0) {
+                            // 主項目
+                            Button(action: {
+                                withAnimation(.spring(response: 0.3, dampingFraction: 0.7)) {
+                                    if expandedProviderID == provider.id {
+                                        expandedProviderID = nil
+                                    } else {
+                                        expandedProviderID = provider.id
+                                    }
+                                }
+                            }) {
+                                HStack {
+                                    VStack(alignment: .leading, spacing: 4) {
+                                        Text(provider.name)
+                                            .font(.system(size: 11, weight: .bold))
+                                            .foregroundColor(.primary)
+                                        
+                                        HStack(spacing: 12) {
+                                            miniStat(label: "中繼", value: provider.repeaterStr)
+                                            miniStat(label: "Mac", value: provider.macStr)
+                                            miniStat(label: "其他", value: provider.othersStr)
+                                        }
+                                    }
+                                    
+                                    Spacer()
+                                    
+                                    if !provider.subStats.isEmpty {
+                                        Image(systemName: "chevron.right")
+                                            .font(.system(size: 9, weight: .bold))
+                                            .foregroundColor(.secondary)
+                                            .rotationEffect(.degrees(expandedProviderID == provider.id ? 90 : 0))
+                                    }
+                                }
+                                .padding(12)
+                                .background(Color.primary.opacity(0.04))
+                                .cornerRadius(8)
+                            }
+                            .buttonStyle(.plain)
                             
-                            HStack {
-                                miniStat(label: "中繼", value: provider.repeaterStr)
-                                Spacer()
-                                miniStat(label: "Mac", value: provider.macStr)
-                                Spacer()
-                                miniStat(label: "其他", value: provider.othersStr)
+                            // 子項目 (下拉內容)
+                            if expandedProviderID == provider.id && !provider.subStats.isEmpty {
+                                VStack(spacing: 1) {
+                                    ForEach(provider.subStats) { sub in
+                                        HStack {
+                                            Text(sub.name)
+                                                .font(.system(size: 10, weight: .medium))
+                                                .foregroundColor(.secondary)
+                                                .frame(width: 60, alignment: .leading)
+                                            
+                                            Spacer()
+                                            
+                                            HStack(spacing: 16) {
+                                                miniStat(label: "中繼", value: sub.repeaterStr)
+                                                miniStat(label: "Mac", value: sub.macStr)
+                                                miniStat(label: "其他", value: sub.othersStr)
+                                            }
+                                        }
+                                        .padding(.vertical, 8)
+                                        .padding(.horizontal, 16)
+                                        .background(Color.primary.opacity(0.02))
+                                    }
+                                }
+                                .padding(.bottom, 4)
                             }
                         }
-                        .padding(10)
-                        .background(Color.primary.opacity(0.03))
-                        .cornerRadius(8)
                     }
                 }
                 .padding(.vertical, 4)

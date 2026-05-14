@@ -26,32 +26,53 @@ class NetworkMonitor: ObservableObject {
     private var lastRx: UInt64 = 0
     private var lastTx: UInt64 = 0
     private var isFirstRun = true
-    private var primaryInterfaceFromPath: String? = nil // 新增：從 NWPathMonitor 獲取的系統預設介面
+    private var primaryInterfaceFromPath: String? = nil
     
     func startMonitoring() {
-        // 請求通知權限
         UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound]) { _, _ in }
         
-        // 使用 NWPathMonitor 監控網路連線狀態
         pathMonitor = NWPathMonitor()
         pathMonitor?.pathUpdateHandler = { [weak self] path in
             let connected = (path.status == .satisfied)
-            let interfaceName = path.availableInterfaces.first?.name // 獲取當前最優先的介面名稱
+            let interfaceName = path.availableInterfaces.first?.name
             DispatchQueue.main.async {
                 self?.isConnected = connected
                 self?.primaryInterfaceFromPath = interfaceName
-                print("DEBUG: NWPathMonitor Status -> \(connected ? "Connected" : "Disconnected") (Primary Interface: \(interfaceName ?? "None"))")
             }
         }
         let queue = DispatchQueue(label: "NetworkMonitorQueue")
         pathMonitor?.start(queue: queue)
         
-        // Use .common runloop mode to ensure the timer fires even when a popover/menu is active
         timer = Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { [weak self] _ in
             self?.updateNetworkStats()
         }
         RunLoop.main.add(timer!, forMode: .common)
-        updateNetworkStats() // Initial fetch
+        updateNetworkStats()
+    }
+    
+    private func getDefaultInterfaceAndGateway() -> (iface: String?, gateway: String?) {
+        let task = Process()
+        task.launchPath = "/usr/bin/env"
+        task.arguments = ["sh", "-c", "route -n get default"]
+        let pipe = Pipe()
+        task.standardOutput = pipe
+        task.launch()
+        let data = pipe.fileHandleForReading.readDataToEndOfFile()
+        if let output = String(data: data, encoding: .utf8) {
+            var iface: String? = nil
+            var gateway: String? = nil
+            let lines = output.components(separatedBy: .newlines)
+            for line in lines {
+                if line.contains("interface:") {
+                    iface = line.components(separatedBy: ":").last?.trimmingCharacters(in: .whitespaces)
+                }
+                if line.contains("gateway:") {
+                    gateway = line.components(separatedBy: ":").last?.trimmingCharacters(in: .whitespaces)
+                }
+            }
+            return (iface, gateway)
+        }
+        return (nil, nil)
     }
     
     private func updateNetworkStats() {
@@ -63,7 +84,11 @@ class NetworkMonitor: ObservableObject {
         var activeInterface: String?
         var maxTraffic: UInt64 = 0
         
-        // 第一步：找出所有具有 IP 位址的介面名稱
+        let netInfo = getDefaultInterfaceAndGateway()
+        if let iface = netInfo.iface {
+            primaryInterfaceFromPath = iface
+        }
+        
         var interfacesWithIP = Set<String>()
         var p = ifaddr
         while p != nil {
@@ -76,7 +101,6 @@ class NetworkMonitor: ObservableObject {
             p = interface.ifa_next
         }
         
-        // 第二步：從具有 IP 的介面中，找出當前主要介面
         var ptr = ifaddr
         while ptr != nil {
             defer { ptr = ptr?.pointee.ifa_next }
@@ -93,19 +117,13 @@ class NetworkMonitor: ObservableObject {
                     let networkData = data.assumingMemoryBound(to: if_data.self).pointee
                     let currentRx = UInt64(networkData.ifi_ibytes)
                     let currentTx = UInt64(networkData.ifi_obytes)
+                    rx += currentRx; tx += currentTx
                     
-                    // 累加所有有效介面的總流量
-                    rx += currentRx
-                    tx += currentTx
-                    
-                    // 判定 activeInterface 的優先順序：
-                    // 1. 如果匹配系統 NWPathMonitor 建議的介面，則絕對優先。
-                    // 2. 如果沒建議，則看誰的歷史流量最大 (保留原邏輯作為備選)。
                     if let primary = primaryInterfaceFromPath, name == primary {
                         activeInterface = name
-                        maxTraffic = UInt64.max // 強制鎖定為此介面
+                        maxTraffic = UInt64.max
                     } else if activeInterface == nil || (currentRx + currentTx > maxTraffic) {
-                        if activeInterface != primaryInterfaceFromPath { // 不要覆蓋掉已經鎖定的系統建議介面
+                        if activeInterface != primaryInterfaceFromPath {
                             maxTraffic = currentRx + currentTx
                             activeInterface = name
                         }
@@ -116,102 +134,47 @@ class NetworkMonitor: ObservableObject {
         freeifaddrs(ifaddr)
         
         if let activeIf = activeInterface {
-            updateDeviceInfo(interfaceName: activeIf)
+            updateDeviceInfo(interfaceName: activeIf, gateway: netInfo.gateway)
         } else {
             DispatchQueue.main.async {
-                self.networkDevice = "-"
-                self.networkProvider = "-"
-                self.connectionMethod = "-"
-                self.isConnected = false
+                self.networkDevice = "-"; self.networkProvider = "-"
+                self.connectionMethod = "-"; self.isConnected = false
             }
         }
         
         DispatchQueue.main.async {
-            // 如果沒抓到 activeInterface，表示實體層級斷開
-            if activeInterface == nil {
-                self.isConnected = false
-            }
-            
+            if activeInterface == nil { self.isConnected = false }
             if self.isFirstRun {
-                self.lastRx = rx
-                self.lastTx = tx
-                self.isFirstRun = false
-                return
+                self.lastRx = rx; self.lastTx = tx
+                self.isFirstRun = false; return
             }
-            
             let diffRx = rx >= self.lastRx ? rx - self.lastRx : 0
             let diffTx = tx >= self.lastTx ? tx - self.lastTx : 0
-            
-            self.rxSpeed = diffRx
-            self.txSpeed = diffTx
-            
-            self.lastRx = rx
-            self.lastTx = tx
-            
-            self.rxHistory.removeFirst()
-            self.rxHistory.append(Double(diffRx) / 1024.0) // Convert to KB for chart
-            self.txHistory.removeFirst()
-            self.txHistory.append(Double(diffTx) / 1024.0)
+            self.rxSpeed = diffRx; self.txSpeed = diffTx
+            self.lastRx = rx; self.lastTx = tx
+            self.rxHistory.removeFirst(); self.rxHistory.append(Double(diffRx) / 1024.0)
+            self.txHistory.removeFirst(); self.txHistory.append(Double(diffTx) / 1024.0)
         }
     }
     
-    private func updateDeviceInfo(interfaceName: String) {
+    private func updateDeviceInfo(interfaceName: String, gateway: String?) {
         var rawName: String = "未知"
         var device: String = "-"
         var provider: String = "-" 
         var method: String = "Ethernet"
         
-        // 嘗試從 SystemConfiguration 獲取詳細資訊
+        // 1. 取得原始介面資訊與連線方式
         if let interfaces = SCNetworkInterfaceCopyAll() as? [SCNetworkInterface] {
             for interface in interfaces {
                 if let bsdName = SCNetworkInterfaceGetBSDName(interface), bsdName as String == interfaceName {
-                    // 獲取硬體埠名稱 (例如 "Wi-Fi" 或 "22126RN91Y")
                     if let localizedName = SCNetworkInterfaceGetLocalizedDisplayName(interface) {
                         let hName = localizedName as String
                         rawName = hName
-                        
                         if hName.contains("iPhone") || hName.contains("USB") {
                             method = "USB"
                         } else if hName.contains("Wi-Fi") {
                             method = "Wi-Fi"
-                            if let ssid = CWWiFiClient.shared().interface()?.ssid() {
-                                rawName = ssid
-                            } else {
-                                // 備選方案：使用 shell 指令獲取 SSID
-                                let task = Process()
-                                task.launchPath = "/usr/sbin/networksetup"
-                                task.arguments = ["-getairportnetwork", interfaceName]
-                                let pipe = Pipe()
-                                task.standardOutput = pipe
-                                task.launch()
-                                let data = pipe.fileHandleForReading.readDataToEndOfFile()
-                                if let output = String(data: data, encoding: .utf8), output.contains(": ") {
-                                    rawName = output.components(separatedBy: ": ").last?.trimmingCharacters(in: .whitespacesAndNewlines) ?? rawName
-                                }
-                            }
-                        }
-                    }
-                    
-                    // 進階檢查：從「網路服務」名稱判斷 (例如 "Redmi 12C USB網路")
-                    if let prefs = SCPreferencesCreate(nil, "NeTraffic" as CFString, nil),
-                       let sets = SCNetworkSetCopyCurrent(prefs),
-                       let services = SCNetworkSetCopyServices(sets) as? [SCNetworkService] {
-                        for service in services {
-                            if let sInterface = SCNetworkServiceGetInterface(service),
-                               let sBsdName = SCNetworkInterfaceGetBSDName(sInterface),
-                               sBsdName as String == interfaceName {
-                                if let sName = SCNetworkServiceGetName(service) as String? {
-                                    // 如果服務名稱包含 USB，則判定為 USB 連線
-                                    if sName.contains("USB") {
-                                        method = "USB"
-                                    }
-                                    // 如果硬體標籤是奇怪的編碼，改用較好讀的服務名稱作為原始標籤
-                                    if rawName.count > 15 || rawName == interfaceName {
-                                        rawName = sName
-                                    }
-                                }
-                                break
-                            }
+                            if let ssid = CWWiFiClient.shared().interface()?.ssid() { rawName = ssid }
                         }
                     }
                     break
@@ -219,24 +182,33 @@ class NetworkMonitor: ObservableObject {
             }
         }
         
-        // 套用自定義映射 (優先使用使用者設定，其次使用內建預設)
-        let mappings = UserDefaults.standard.dictionary(forKey: "NetworkMappings") as? [String: [String: String]] ?? [:]
+        // 針對 iPhone 熱點閘道器的特別標記 (覆蓋 rawName)
+        if gateway == "172.20.10.1" {
+            rawName = (interfaceName == "en0") ? "iPhone (Wi-Fi)" : "iPhone (USB)"
+            method = (interfaceName == "en0") ? "Wi-Fi" : "USB"
+        }
         
+        // 2. 檢查自定義映射 (優先級最高)
+        let mappings = UserDefaults.standard.dictionary(forKey: "NetworkMappings") as? [String: [String: String]] ?? [:]
         if let custom = mappings[rawName] {
             device = custom["device"] ?? "-"
             provider = custom["provider"] ?? "-"
-            print("Mapping found for \(rawName): \(device), \(provider)")
-        } else if rawName == "22126RN91Y" { // 內建預設：星鏈適配器
-            device = "Starlink"
+        } 
+        // 3. 智慧自動識別 (無映射時)
+        else if gateway == "172.20.10.1" {
+            device = "iPhone 16 Pro"
+            provider = "中華電信"
+            if method == "USB" { provider += " 有線" } else { provider += " 無線" }
+        } else if rawName == "22126RN91Y" || rawName.contains("Redmi") || rawName.contains("Starlink") {
+            device = "Redmi 12C"
             provider = "星鏈"
-            print("Default mapping applied for Starlink (\(rawName))")
-        } else {
-            // 未知設備，發送通知
-            print("No mapping for \(rawName)")
-            if !notifiedRawNames.contains(rawName) && rawName != "未知" {
-                sendNewConnectionNotification(rawName: rawName)
-                notifiedRawNames.insert(rawName)
-            }
+        }
+        
+        // 針對自動識別出的 rawName 補齊 iPhone 後綴 (如果剛好名稱包含 iPhone 但不是走閘道器)
+        if device == "-" && rawName.contains("iPhone") {
+            device = "iPhone 16 Pro"
+            provider = "中華電信"
+            if method == "USB" { provider += " 有線" } else { provider += " 無線" }
         }
         
         DispatchQueue.main.async {
@@ -247,36 +219,16 @@ class NetworkMonitor: ObservableObject {
         }
     }
     
-    private func sendNewConnectionNotification(rawName: String) {
-        let content = UNMutableNotificationContent()
-        content.title = "偵測到新網路設備"
-        content.body = "原始名稱：\(rawName)\n請點擊內容視窗進行自定義標籤。"
-        content.sound = .default
-        
-        let request = UNNotificationRequest(identifier: UUID().uuidString, content: content, trigger: nil)
-        UNUserNotificationCenter.current().add(request)
-    }
-    
     func saveCustomMapping(device: String, provider: String) {
         let rawName = UserDefaults.standard.string(forKey: "CurrentRawNetworkName") ?? ""
         guard !rawName.isEmpty else { return }
-        
         var mappings = UserDefaults.standard.dictionary(forKey: "NetworkMappings") as? [String: [String: String]] ?? [:]
-        
-        // 取得目前的原始 Provider（即 Shell 腳本會使用的名稱，例如 "Starlink (星鏈)"）
-        // 這裡我們假設如果 rawName 是 22126RN91Y，它對應的原始名就是 "Starlink (星鏈)"
         var originalProviderInJSON = provider
-        if rawName == "22126RN91Y" { originalProviderInJSON = "Starlink (星鏈)" }
-        // ... 可以根據需要增加其他硬體代碼與 JSON Key 的對應
-        
-        mappings[rawName] = [
-            "device": device, 
-            "provider": provider,
-            "originalProviderInJSON": originalProviderInJSON
-        ]
+        if rawName.contains("22126RN91Y") || rawName.contains("iPhone") { 
+            originalProviderInJSON = (rawName.contains("22126RN91Y")) ? "Starlink (星鏈)" : "iPhone 16 Pro (中華電信)" 
+        }
+        mappings[rawName] = ["device": device, "provider": provider, "originalProviderInJSON": originalProviderInJSON]
         UserDefaults.standard.set(mappings, forKey: "NetworkMappings")
-        
-        // 立即更新 UI
         self.networkDevice = device
         self.networkProvider = provider
     }
